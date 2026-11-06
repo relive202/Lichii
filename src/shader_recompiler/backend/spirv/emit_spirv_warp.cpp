@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
@@ -90,8 +92,23 @@ Id GuestLane(EmitContext& ctx, Id index) {
     return ctx.OpBitwiseAnd(ctx.U32[1], index, ctx.Const(31U));
 }
 
+// Experiment: EDEN_NX2_FRAGMENT_SHUFFLE_FALLBACK=1 lowers absolute and relative shuffles in
+// fragment shaders through the broadcast loop Qualcomm already uses. AMD's Windows compiler
+// (amdvlk64 2.0.353) crashes in vkCreateGraphicsPipelines on some Ocarina of Time fragment shaders,
+// and Djihads80/Eglantine#618 reduced that crash to OpGroupNonUniformShuffle.
+bool UseShuffleFallback(EmitContext& ctx) {
+    if (ctx.profile.has_broken_spirv_subgroup_shuffle) {
+        return true;
+    }
+    static const bool fragment_fallback = [] {
+        const char* value = std::getenv("EDEN_NX2_FRAGMENT_SHUFFLE_FALLBACK");
+        return value != nullptr && value[0] != '0';
+    }();
+    return fragment_fallback && ctx.stage == Stage::Fragment;
+}
+
 Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
-    if (!ctx.profile.has_broken_spirv_subgroup_shuffle) {
+    if (!UseShuffleFallback(ctx)) {
         return ctx.OpGroupNonUniformShuffle(ctx.U32[1], SubgroupScope(ctx), value, src_thread_id);
     }
     Id result{ctx.u32_zero_value};
@@ -105,7 +122,7 @@ Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
 }
 
 Id ShuffleRelative(EmitContext& ctx, Id value, Id delta, Id src_thread_id, spv::Op op) {
-    if (!ctx.profile.support_shuffle_relative) {
+    if (!ctx.profile.support_shuffle_relative || UseShuffleFallback(ctx)) {
         return ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id));
     }
     const Id result{ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, delta)};
