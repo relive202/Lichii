@@ -382,7 +382,7 @@ Id CasFunction(EmitContext& ctx, Operation operation, Id value_type) {
 }
 
 Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_pointer,
-           Id value_type, Id memory_type, spv::Scope scope) {
+           Id value_type, spv::Scope scope) {
     const bool is_shared{scope == spv::Scope::Workgroup};
     const bool is_struct{!is_shared || ctx.uses_explicit_workgroup_layout};
     const Id cas_func{CasFunction(ctx, operation, value_type)};
@@ -718,11 +718,11 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
 void EmitContext::DefineSharedMemoryFunctions(const IR::Program& program) {
     if (program.info.uses_shared_increment) {
         increment_cas_shared = CasLoop(*this, Operation::Increment, shared_memory_u32_type,
-                                       shared_u32, U32[1], U32[1], spv::Scope::Workgroup);
+                                       shared_u32, U32[1], spv::Scope::Workgroup);
     }
     if (program.info.uses_shared_decrement) {
         decrement_cas_shared = CasLoop(*this, Operation::Decrement, shared_memory_u32_type,
-                                       shared_u32, U32[1], U32[1], spv::Scope::Workgroup);
+                                       shared_u32, U32[1], spv::Scope::Workgroup);
     }
 }
 
@@ -1505,39 +1505,39 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     }
     if (info.uses_global_increment) {
         increment_cas_ssbo = CasLoop(*this, Operation::Increment, storage_types.U32.array,
-                                     storage_types.U32.element, U32[1], U32[1], spv::Scope::Device);
+                                     storage_types.U32.element, U32[1], spv::Scope::Device);
     }
     if (info.uses_global_decrement) {
         decrement_cas_ssbo = CasLoop(*this, Operation::Decrement, storage_types.U32.array,
-                                     storage_types.U32.element, U32[1], U32[1], spv::Scope::Device);
+                                     storage_types.U32.element, U32[1], spv::Scope::Device);
     }
     if (info.uses_atomic_f32_add) {
         f32_add_cas = CasLoop(*this, Operation::FPAdd, storage_types.U32.array,
-                              storage_types.U32.element, F32[1], U32[1], spv::Scope::Device);
+                              storage_types.U32.element, F32[1], spv::Scope::Device);
     }
     if (info.uses_atomic_f16x2_add) {
         f16x2_add_cas = CasLoop(*this, Operation::FPAdd, storage_types.U32.array,
-                                storage_types.U32.element, F16[2], F16[2], spv::Scope::Device);
+                                storage_types.U32.element, F16[2], spv::Scope::Device);
     }
     if (info.uses_atomic_f16x2_min) {
         f16x2_min_cas = CasLoop(*this, Operation::FPMin, storage_types.U32.array,
-                                storage_types.U32.element, F16[2], F16[2], spv::Scope::Device);
+                                storage_types.U32.element, F16[2], spv::Scope::Device);
     }
     if (info.uses_atomic_f16x2_max) {
         f16x2_max_cas = CasLoop(*this, Operation::FPMax, storage_types.U32.array,
-                                storage_types.U32.element, F16[2], F16[2], spv::Scope::Device);
+                                storage_types.U32.element, F16[2], spv::Scope::Device);
     }
     if (info.uses_atomic_f32x2_add) {
         f32x2_add_cas = CasLoop(*this, Operation::FPAdd, storage_types.U32.array,
-                                storage_types.U32.element, F32[2], F32[2], spv::Scope::Device);
+                                storage_types.U32.element, F32[2], spv::Scope::Device);
     }
     if (info.uses_atomic_f32x2_min) {
         f32x2_min_cas = CasLoop(*this, Operation::FPMin, storage_types.U32.array,
-                                storage_types.U32.element, F32[2], F32[2], spv::Scope::Device);
+                                storage_types.U32.element, F32[2], spv::Scope::Device);
     }
     if (info.uses_atomic_f32x2_max) {
         f32x2_max_cas = CasLoop(*this, Operation::FPMax, storage_types.U32.array,
-                                storage_types.U32.element, F32[2], F32[2], spv::Scope::Device);
+                                storage_types.U32.element, F32[2], spv::Scope::Device);
     }
 }
 
