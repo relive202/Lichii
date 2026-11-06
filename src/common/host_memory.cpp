@@ -53,6 +53,7 @@
 #endif // ^^^ POSIX ^^^
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -1054,20 +1055,91 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #endif
 }
 
+namespace {
+// Paging memory out costs a lot more than keeping it: on Linux MADV_PAGEOUT holds the process's
+// memory-map lock while it reclaims, and every thread that changes a protection or a mapping
+// (the GPU thread, the guest cores, the Vulkan driver) waits for it; Ocarina of Time froze for up
+// to 1.4 s on an RX 7900 GRE PC with 31 GB of RAM. So it only happens when the system is short of
+// RAM: under max(4 GiB, 1/5 of RAM) available. EDEN_NX2_COLD_HINT=0 never, =1 always.
+// Memory is paged out in pieces this big, so the memory-map lock is let go between them.
+constexpr size_t ColdHintPiece = 2ULL << 20;
+
+bool ShouldHintCold() {
+    static const int forced = [] {
+        const char* value = std::getenv("EDEN_NX2_COLD_HINT");
+        return value != nullptr && (value[0] == '0' || value[0] == '1') ? value[0] - '0' : -1;
+    }();
+    if (forced >= 0) {
+        return forced == 1;
+    }
+    static std::mutex mutex;
+    static std::chrono::steady_clock::time_point checked{};
+    static bool short_of_ram = false;
+    std::scoped_lock lock{mutex};
+    const auto now = std::chrono::steady_clock::now();
+    if (checked != std::chrono::steady_clock::time_point{} &&
+        now - checked < std::chrono::seconds{2}) {
+        return short_of_ram;
+    }
+    checked = now;
+    u64 total = 0;
+    u64 available = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        total = status.ullTotalPhys;
+        available = status.ullAvailPhys;
+    }
+#elif defined(__linux__)
+    if (std::FILE* const meminfo = std::fopen("/proc/meminfo", "r")) {
+        char line[128];
+        while (std::fgets(line, sizeof(line), meminfo) != nullptr) {
+            unsigned long long kib = 0;
+            if (std::sscanf(line, "MemTotal: %llu kB", &kib) == 1) {
+                total = kib * 1024;
+            } else if (std::sscanf(line, "MemAvailable: %llu kB", &kib) == 1) {
+                available = kib * 1024;
+            }
+        }
+        std::fclose(meminfo);
+    }
+#endif
+    if (total == 0) {
+        short_of_ram = true; // Unknown: keep the hint.
+        return short_of_ram;
+    }
+    constexpr u64 GiB = 1ULL << 30;
+    const bool was_short = short_of_ram;
+    short_of_ram = available < std::max<u64>(4 * GiB, total / 5);
+    static bool logged = false;
+    if (!logged || short_of_ram != was_short) {
+        logged = true;
+        LOG_INFO(HW_Memory, "Paging out guest memory textures were uploaded from: {} ({} MiB of {} MiB RAM available)",
+                 short_of_ram ? "on" : "off", available >> 20, total >> 20);
+    }
+    return short_of_ram;
+}
+} // Anonymous namespace
+
 void HostMemory::HintCold(size_t physical_offset, size_t length,
                           std::optional<size_t> virtual_offset) const {
-    if (length == 0 || backing_base == nullptr) {
+    if (length == 0 || backing_base == nullptr || !ShouldHintCold()) {
         return;
     }
     const auto hint = [length](u8* address) {
+        for (size_t done = 0; done < length; done += ColdHintPiece) {
+            const size_t piece = std::min(ColdHintPiece, length - done);
 #ifdef _WIN32
-        // Unlocking pages that are not locked takes them out of the working set.
-        VirtualUnlock(address, length);
+            // Unlocking pages that are not locked takes them out of the working set.
+            VirtualUnlock(address + done, piece);
 #elif defined(__linux__) && defined(MADV_PAGEOUT)
-        madvise(address, length, MADV_PAGEOUT);
+            madvise(address + done, piece, MADV_PAGEOUT);
 #else
-        static_cast<void>(address);
+            static_cast<void>(address);
+            static_cast<void>(piece);
 #endif
+        }
     };
     hint(backing_base + physical_offset);
     if (virtual_offset && virtual_base != nullptr && *virtual_offset + length <= virtual_size) {
