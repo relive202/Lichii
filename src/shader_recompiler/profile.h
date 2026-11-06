@@ -106,6 +106,9 @@ struct Profile {
     bool has_broken_spirv_subgroup_shuffle{};
     /// AMD's Windows compiler crashes on OpGroupNonUniformShuffle in some fragment shaders
     bool has_broken_spirv_fragment_shuffle{};
+    /// OpGroupNonUniformShuffle with a lane computed at run time crashes the pipeline compiler in
+    /// graphics stages; compute, task and mesh stages keep it
+    bool has_broken_spirv_dynamic_subgroup_shuffle{};
     u32 max_subgroup_size{};
 
     u32 gl_max_compute_smem_size{};

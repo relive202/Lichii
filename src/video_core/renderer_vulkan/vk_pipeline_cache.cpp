@@ -475,6 +475,22 @@ bool DisableDriverOptimization(const Device& device, size_t spirv_bytes) {
     }
     return mode == 1 || device.GetDriverVersion() < VK_MAKE_API_VERSION(0, 2, 0, 388);
 }
+
+// AMD's Windows driver (and AMDVLK, built from the same code) crashes in
+// vkCreateGraphicsPipelines on some fragment shaders with a dynamic-lane SHFL.IDX: an access
+// violation in amdvlk64.dll on RDNA1, 2 and 4 (Ocarina of Time, upstream Eglantine #618). Such
+// shuffles in graphics stages become a loop of broadcasts there. RADV is not affected.
+// EDEN_NX2_AMD_SHUFFLE_LOOP=0 keeps the shuffle, =1 takes the loop on any driver.
+bool BrokenDynamicSubgroupShuffle(VkDriverId driver_id) {
+    static const char forced = [] {
+        const char* value = std::getenv("EDEN_NX2_AMD_SHUFFLE_LOOP");
+        return value == nullptr ? '\0' : value[0];
+    }();
+    if (forced == '0' || forced == '1') {
+        return forced == '1';
+    }
+    return driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+}
 } // Anonymous namespace
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -608,6 +624,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
             device.GetDriverVersion() < VK_MAKE_VERSION(512, 672, 0),
         .has_broken_spirv_subgroup_shuffle = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
         .has_broken_spirv_fragment_shuffle = driver_id == VK_DRIVER_ID_AMD_PROPRIETARY,
+        .has_broken_spirv_dynamic_subgroup_shuffle = BrokenDynamicSubgroupShuffle(driver_id),
         .max_subgroup_size = device.GetMaxSubgroupSize(),
         .has_broken_robust =
             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,

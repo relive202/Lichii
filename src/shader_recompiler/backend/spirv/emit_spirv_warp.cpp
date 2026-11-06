@@ -110,7 +110,13 @@ bool UseShuffleFallback(EmitContext& ctx) {
 }
 
 Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
-    if (!UseShuffleFallback(ctx)) {
+    // AMD drivers crash on a shuffle with a lane computed at run time in graphics stages
+    // (chuppatricky v14, EDEN_NX2_AMD_SHUFFLE_LOOP); the loop below is what their compiler
+    // can't finish in compute (minutes there), so compute, task and mesh keep the shuffle.
+    const bool graphics_stage =
+        ctx.stage != Stage::Compute && ctx.stage != Stage::Task && ctx.stage != Stage::Mesh;
+    if (!UseShuffleFallback(ctx) &&
+        !(ctx.profile.has_broken_spirv_dynamic_subgroup_shuffle && graphics_stage)) {
         return ctx.OpGroupNonUniformShuffle(ctx.U32[1], SubgroupScope(ctx), value, src_thread_id);
     }
     Id result{ctx.u32_zero_value};
