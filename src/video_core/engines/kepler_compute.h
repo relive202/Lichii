@@ -23,6 +23,7 @@
 #include "video_core/game_dlss_status.h"
 #include "video_core/macro.h"
 #include "video_core/native_qmd.h"
+#include "video_core/split_write_tracker.h"
 #include "video_core/textures/texture.h"
 
 namespace Core {
@@ -66,6 +67,8 @@ public:
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
+    /// Whether a write to `method` can write memory (a dispatch, upload or report): with the
+    /// native class, every method besides those that only store their value; macros always.
     [[nodiscard]] bool MayWriteMemory(u32 method) const {
         if (method >= native_plain_methods.size()) {
             return true;
@@ -272,6 +275,15 @@ private:
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    /// Tells the split a semaphore release just sent writes a known payload.
+    void FrontNoteRelease(VideoCommon::GpuSplit& split, const FrontState& state, u32 control) const;
+    bool FrontPlainWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                         u32 argument);
+    void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
+    /// What a method sent from the front may write on the back (GpuSplit::Effect).
+    VideoCommon::SplitWriteTracker::Effect FrontEffect(u32 method) const;
+    /// After sending it: the memory it writes, for the front's reads.
+    void FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
@@ -344,6 +356,7 @@ private:
     void ProcessLaunch();
 
     void ConsumeSinkImpl(Core::System& system) override;
+    void ApplyPairs(Core::System& system, const u64* pairs, u32 count) override;
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;

@@ -30,6 +30,31 @@ STICK = {"type": "array", "items": {"type": "number", "minimum": -1, "maximum": 
 
 TOOLS = [
     {
+        "name": "capture_on_flash",
+        "description": "Arms an asynchronous 64x36 per-present white-flash probe. Returns immediately. "
+                       "Read status.flash for triggers, captured-frame white fractions, directories "
+                       "and measured CPU/GPU probe timings. Full dumps capture the next frame after "
+                       "the GPU probe is observed, not necessarily the triggering frame.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threshold_white_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+                "min_luma": {"type": "number", "minimum": 0, "maximum": 1},
+                "max_captures": {"type": "integer", "minimum": 1, "maximum": 10, "default": 1},
+                "timeout_s": {"type": "integer", "minimum": 1, "maximum": 600},
+                "buffers": {"type": "boolean"},
+                "sampled": {"type": "boolean"},
+            },
+            "required": ["threshold_white_fraction", "min_luma"],
+        },
+    },
+    {
+        "name": "disarm",
+        "description": "Stops white-flash probing and returns its results. An already-started "
+                       "frame dump finishes; a missing captured-frame measurement is reported.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "status",
         "description": "Game title, program id, build, renderer, paused state, presented frame "
                        "count and fps (measured over fps_window_ms), dump directory, live log "
@@ -136,6 +161,30 @@ TOOLS = [
                 "seconds": {"type": "number", "minimum": 1, "maximum": 60},
                 "max_chars": {"type": "integer", "minimum": 0},
             },
+        },
+    },
+    {
+        "name": "timeline",
+        "description": "Records what the emulator's threads (guest present, GPU front and back, "
+                       "Vulkan worker) do and wait for, for the given seconds, and writes a "
+                       "Chrome trace (open in ui.perfetto.dev) to the dump directory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"seconds": {"type": "number", "minimum": 0.1, "maximum": 30},
+                           "detail": {"type": "boolean",
+                                      "description": "Also per-draw stages and method calls (slows the GPU threads)"}},
+        },
+    },
+    {
+        "name": "switch",
+        "description": "Reads or sets a live experiment switch (EDEN_NX2_DMA_WAIT_WRITERS).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "value": {"type": "integer"},
+            },
+            "required": ["name"],
         },
     },
     {
@@ -299,6 +348,8 @@ def default_timeout(name, params):
         return 120
     if name == "sample":
         return int(params.get("seconds", 10)) + 90
+    if name == "timeline":
+        return int(params.get("seconds", 5)) + 60
     if name in ("input", "input_sequence"):
         steps = params.get("steps", []) if name == "input_sequence" else [params]
         return sum(int(step.get("frames", 0)) for step in steps) // 20 + 10
@@ -324,6 +375,9 @@ class Adapter:
         index = params.pop("index", False)
         timeout = max(int(params.get("timeout_s", default_timeout(name, params))), 1) + 30
         result = self.emulator.call(name, params, timeout)
+        flash = result.get("flash", {}) if name == "status" else result if name == "disarm" else {}
+        for capture in flash.get("captures", []):
+            self.captures.add(os.path.realpath(capture["directory"]))
         if name == "screenshot":
             png = result.pop("png_base64", None)
             return result, base64.b64decode(png) if png else None

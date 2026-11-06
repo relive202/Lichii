@@ -23,9 +23,12 @@
 #include "common/dkb_frame_trace.h"
 #include "common/logging.h"
 #include "common/polyfill_thread.h"
+#include "common/nx2_timeline.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
+#include "video_core/gpu_wait_site.h"
 #include "video_core/renderer_vulkan/fragment_barrier_state.h"
+#include "video_core/renderer_vulkan/vk_gpu_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -40,6 +43,8 @@ class CommandPool;
 class Device;
 class Framebuffer;
 class GraphicsPipeline;
+class ParallelRecorder;
+class PassRecorder;
 class StateTracker;
 
 struct QueryCacheParams;
@@ -79,6 +84,10 @@ public:
     /// safe to touch worker resources.
     void WaitWorker();
 
+    bool UsesResolvedBatches() const {
+        return resolved_recorder != nullptr;
+    }
+
     void MarkFrameEnd(u64 frame);
     void TraceGraphicsPipeline(const std::array<u64, 6>& hashes);
     void TraceComputePipeline(u64 hash);
@@ -87,6 +96,17 @@ public:
     template <typename Func>
     void TraceGpuWork(vk::CommandBuffer cmdbuf, u64 hash, u64 fragment_hash,
                       std::array<u32, 3> size, Func&& work) {
+        if (auto& breadcrumbs = GpuBreadcrumbs::Get(); breadcrumbs.Enabled()) [[unlikely]] {
+            breadcrumbs.Wrap(cmdbuf, hash, fragment_hash, size,
+                             [&] { TraceGpuWorkTimed(cmdbuf, hash, fragment_hash, size, work); });
+            return;
+        }
+        TraceGpuWorkTimed(cmdbuf, hash, fragment_hash, size, work);
+    }
+
+    template <typename Func>
+    void TraceGpuWorkTimed(vk::CommandBuffer cmdbuf, u64 hash, u64 fragment_hash,
+                           std::array<u32, 3> size, Func&& work) {
         if (!trace_gpu_recording || !trace_work_pool || trace_work_count == TraceMaxWork) {
             work();
             return;
@@ -180,6 +200,8 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
+        const VideoCommon::HostGpuProfile::Scope profile{
+            VideoCommon::HostGpuProfile::Phase::Enqueue};
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
         }
@@ -240,6 +262,8 @@ public:
             if (tick >= master_semaphore->CurrentTick()) {
                 Flush();
             }
+            VideoCommon::BackWaitScope wait_scope{"Scheduler::Wait (host GPU execution)"};
+            Common::Nx2Timeline::Span timeline_span{"wait for host GPU"};
             master_semaphore->Wait(tick);
         }
         const auto trace_waited = trace ? std::chrono::steady_clock::now()
@@ -451,6 +475,10 @@ private:
     bool compute_writes_pending{};
     bool graphics_pipeline_missing{};
     std::unique_ptr<CommandPool> command_pool;
+    std::unique_ptr<ParallelRecorder> parallel_recorder;
+    std::unique_ptr<PassRecorder> resolved_recorder;
+    u64 worker_submission_tick{1};
+    u64 last_worker_submitted_tick{};
 
     vk::QueryPool trace_query_pool;
     static constexpr u32 TraceMaxSubmissions = 512;

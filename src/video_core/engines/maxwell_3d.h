@@ -3199,6 +3199,8 @@ public:
     /// Write the value to the register identified by method.
     void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
 
+    void CallStateMethod(Core::System& system, u32 method, u32 argument) override;
+
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
@@ -3286,6 +3288,8 @@ private:
     void ProcessDirtyRegisters(u32 method, u32 argument);
 
     void ConsumeSinkImpl(Core::System& system) override;
+
+    void ApplyPairs(Core::System& system, const u64* pairs, u32 count) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);
 
@@ -3400,8 +3404,26 @@ private:
     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+public:
+    /// Split front: whether the 3D macro `method`, called with `count` parameters that GPU work
+    /// wrote, only copies the first into the draw's vertex count (dry runs on copies of its
+    /// state, nx2_indirect_grid.h). Then the parameters can stay placeholders.
+    bool FrontMacroCountsDraw(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                              u32 count);
+private:
+    void FrontTrackInstanceLoop(FrontState& state, u32 method, u32 value);
+    bool FrontSkipsLoopWrite(FrontState& state, u32 method, u32 value, bool shadow_kept);
+    void FrontNoteMemoryWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                              const u32* words, u32 count);
     void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
                       u32 count);
+    /// Tells the split a report just sent releases a known payload (GpuSplit::NoteRelease).
+    void FrontNoteRelease(VideoCommon::GpuSplit& split, const FrontState& fs, u32 query) const;
+    /// The memory `amount` words of `method` write, if known (constant buffer uploads, reports).
+    std::pair<GPUVAddr, GPUVAddr> FrontWriteRange(const FrontState& state, u32 method,
+                                                  u32 amount) const;
+    bool FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
+                           GPUVAddr source, u32 ram, u32 words);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
     std::unique_ptr<FrontState> front;

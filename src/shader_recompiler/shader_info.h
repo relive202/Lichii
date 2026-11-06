@@ -178,6 +178,10 @@ struct StorageBufferDescriptor {
     /// When set, the buffer pointer is read from memory at this offset from the constant buffer
     /// pointer, which is bound as its own descriptor.
     u32 indirect_offset{~0U};
+    /// Written through accesses rebased on this buffer. Without them, every write is a global
+    /// access that native_global_bounds assigns at run time to the buffer with the closest base
+    /// at or below its address, so it ends before the next higher base of the program's buffers.
+    bool rebased_writes{};
 
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };
@@ -266,9 +270,14 @@ struct MeshInfo {
     u32 payload_words{}; ///< Task output region / mesh input region, in 32-bit words
     u32 max_vertices{};
     u32 max_primitives{};
-    u32 topology{}; ///< SET_MESH_SHADER_A output topology (4 = triangles)
+    u32 topology{}; ///< SET_MESH_SHADER_A output topology (0 = points, 1 = lines, 4 = triangles)
     boost::container::static_vector<u32, 136> vertex_lines;
     boost::container::static_vector<u32, 136> primitive_lines;
+
+    /// Vertex indices per primitive, which is also its byte count in the map region.
+    [[nodiscard]] u32 PrimitiveVertices() const noexcept {
+        return topology == 0 ? 1 : topology == 1 ? 2 : 3;
+    }
 };
 
 struct Info {

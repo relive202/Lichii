@@ -37,6 +37,9 @@
 #undef False
 #undef None
 #undef True
+// X11's status codes clash with NvResult and the nvnflinger Status enums.
+#undef Success
+#undef BadValue
 
 // "Catch-all" handle for both Android and.. the rest of platforms
 struct VkSurfaceKHR_T;

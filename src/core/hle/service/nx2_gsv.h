@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include "common/nx2_timeline.h"
 #include <array>
 #include <thread>
 #include <chrono>
@@ -39,6 +40,7 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
@@ -1734,6 +1736,8 @@ private:
     // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
     // at once (changes.patch's default mask is 0x7fff).
     void PresentClientBuffer(HLERequestContext& ctx) {
+        Common::Nx2Timeline::OnPresent();
+        Common::Nx2Timeline::Span timeline_span{"guest present"};
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
         if (Common::DkbFrameTrace::Enabled()) {
@@ -1765,7 +1769,8 @@ private:
         const u64 app_program_id = system.GetApplicationProcessProgramID();
         if (frames_ahead == -1 && app_program_id == DonkeyKongBananzaProgramId) {
             frames_ahead = 0;
-        } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId) {
+        } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId &&
+                   VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FramesAhead)) {
             frames_ahead = 1;
         }
         const auto entered = std::chrono::steady_clock::now();
@@ -1899,6 +1904,7 @@ private:
     // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
     // at every vblank it ran at double speed. EDEN_NX2_SWAP_INTERVAL=<n> forces the interval.
     void PaceToVblank(u32 timing, const Kernel::KProcess* process) {
+        Common::Nx2Timeline::Span timeline_span{"present: pace to vblank"};
         const bool trace = Common::DkbFrameTrace::Enabled();
         if (trace) {
             if (m_frame_trace.previous_word && *m_frame_trace.previous_word != timing) {
@@ -1926,6 +1932,13 @@ private:
         if (forced_interval != 0) {
             swap_interval = forced_interval;
         }
+        // Ocarina of Time's 30 FPS mode (lower-end PCs): two vblanks a frame. Its frame step
+        // follows the time measured (Dynamic FPS by Dark), so it keeps full speed.
+        constexpr u64 OcarinaOfTimeId = 0x0400486024DEC000ULL;
+        if (process != nullptr && process->GetProgramId() == OcarinaOfTimeId &&
+            Settings::values.oot_30fps.GetValue()) {
+            swap_interval = (std::max)(swap_interval, 2U);
+        }
         const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
         if (trace) {
             m_frame_trace.interval = swap_interval;
@@ -1933,14 +1946,32 @@ private:
             m_frame_trace.forced = forced_interval;
         }
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
+            VideoCommon::Nx2Perf::g_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
             return;
         }
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
                      m_presents, swap_interval, refresh_rate, timing);
         }
-        const auto interval = std::chrono::nanoseconds{
+        auto interval = std::chrono::nanoseconds{
             100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
+        // Genlock: with the host frame pacer on, a frame period within 1% of a whole number of
+        // display refreshes becomes exactly that many measured refreshes (a "120 Hz" display at
+        // 119.98 Hz: 33.3389 ms instead of 33.3333). On the game's own clock its frames drifted
+        // against the display and missed their refresh about once a minute (a 41 ms frame, then
+        // a short one). The game runs at most 1% slower.
+        if (const long long host_refresh =
+                VideoCommon::Nx2Perf::g_host_refresh_ns.load(std::memory_order_relaxed);
+            host_refresh > 0) {
+            const long long refreshes =
+                (interval.count() + host_refresh / 2) / host_refresh;
+            const long long locked = refreshes * host_refresh;
+            if (refreshes >= 1 && std::abs(locked - interval.count()) * 100 < interval.count()) {
+                interval = std::chrono::nanoseconds{locked};
+            }
+        }
+        VideoCommon::Nx2Perf::g_guest_frame_interval_ns.store(interval.count(),
+                                                              std::memory_order_relaxed);
         if (trace) {
             m_frame_trace.target_ms = std::chrono::duration<double, std::milli>(interval).count();
         }
@@ -1972,6 +2003,7 @@ private:
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
     /// Returns whether the fence was reached.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
+        Common::Nx2Timeline::Span timeline_span{"present: wait for frame fence"};
         if (fence_id >= 192) {
             return true;
         }
@@ -2036,6 +2068,7 @@ private:
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
     void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
+        Common::Nx2Timeline::Span timeline_span{"present: composite"};
         u64 address{};
         u32 parent{};
         u64 parent_offset{};
@@ -3157,9 +3190,11 @@ private:
             Tegra::Texture::SwizzleTexture(m_tiled, bytes, 4, static_cast<u32>(layout.pitch / 4),
                                            layout.height, 1, 4, 0, 1, true);
             memory.WriteBlock(address, m_tiled.data(), m_tiled.size());
+            // preserve_gpu_writes: GPU-written bytes on these pages are handled on the GPU thread
+            // (as CPU writes through core/memory.cpp are), never from this service thread.
             if (const auto device =
                     Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
-                system.GPU().InvalidateRegion(*device, m_tiled.size());
+                system.GPU().InvalidateRegion(*device, m_tiled.size(), true);
             }
             trace_write();
             return {width, height};
@@ -3173,8 +3208,9 @@ private:
                               layout.pitch * ((height + 1) / 2));
         }
         // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
+        // preserve_gpu_writes: GPU-written bytes on these pages are handled on the GPU thread.
         if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
-            system.GPU().InvalidateRegion(*device, layout.size);
+            system.GPU().InvalidateRegion(*device, layout.size, true);
         }
         trace_write();
         return {width, height};

@@ -15,7 +15,9 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -69,6 +71,23 @@ constexpr u32 NUM_STORAGE_BUFFERS = Shader::Info::MAX_SSBOS;
 static_assert(NUM_STORAGE_BUFFERS <= 32, "storage binding masks must fit u32");
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
+
+/// End of the writes a run-time selected global access can make through the buffer at base: the
+/// backend assigns an address to the closest base at or below it, so writes through this buffer
+/// stop before the next higher base. Bases are aligned down by up to alignment bytes where the
+/// shader reads them, so a base may lie that much past the one bound. Returns size when no
+/// other base is higher.
+[[nodiscard]] inline u64 SelectedWriteExtent(GPUVAddr base, u64 size,
+                                             std::span<const GPUVAddr> other_bases,
+                                             u64 alignment) {
+    u64 extent = size;
+    for (const GPUVAddr other : other_bases) {
+        if (other > base) {
+            extent = (std::min)(extent, other - base + alignment);
+        }
+    }
+    return extent;
+}
 
 static_assert(NUM_GRAPHICS_UNIFORM_BUFFERS <= 32, "fast bitmask must fit u32");
 
@@ -156,6 +175,12 @@ public:
     std::array<u32, NUM_STAGES> written_storage_buffers{};
     u32 enabled_compute_storage_buffers = 0;
     u32 written_compute_storage_buffers = 0;
+    /// Written only by run-time selected global accesses (see SelectedWriteExtent).
+    std::array<u32, NUM_STAGES> selected_write_storage_buffers{};
+    u32 selected_write_compute_storage_buffers = 0;
+    /// Bound from a pointer table entry.
+    std::array<u32, NUM_STAGES> table_storage_buffers{};
+    u32 table_compute_storage_buffers = 0;
 
     u32 total_graphics_storage_buffers = 0;
     u32 total_compute_storage_buffers = 0;
@@ -182,7 +207,6 @@ public:
 
 template <class P>
 class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInfo> {
-    friend struct BufferCacheTestAccess;
     // Page size for caching purposes.
     // This is unrelated to the CPU page size and it can be changed as it seems optimal.
 #ifdef YUZU_LEGACY
@@ -256,9 +280,19 @@ public:
     /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
     void ClearDownload(DAddr base_addr, u64 size);
 
+    /// CPU writes collected but not yet applied (SetPendingCpuWrites).
+    [[nodiscard]] Common::RangeSet<DAddr> PendingCpuWriteRanges();
+
+    /// Writes downloaded bytes to guest memory, except over `cpu_written`.
+    void WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_written, DAddr device_addr,
+                               const u8* data, u64 size);
+
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
+
+    /// DownloadMemory for each range, waiting for the GPU once.
+    void DownloadMemoryRanges(std::span<const std::pair<DAddr, u64>> ranges);
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
@@ -292,7 +326,8 @@ public:
     void UnbindGraphicsStorageBuffers(size_t stage);
 
     bool BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                   bool is_written, u32 indirect_offset = ~0U);
+                                   bool is_written, u32 indirect_offset = ~0U,
+                                   bool selected_writes = false);
 
     void UnbindGraphicsTextureBuffers(size_t stage);
 
@@ -302,7 +337,8 @@ public:
     void UnbindComputeStorageBuffers();
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                  bool is_written, u32 indirect_offset = ~0U);
+                                  bool is_written, u32 indirect_offset = ~0U,
+                                  bool selected_writes = false);
 
     void UnbindComputeTextureBuffers();
 
@@ -317,6 +353,18 @@ public:
                                                           ObtainBufferSynchronize sync_info,
                                                           ObtainBufferOperation post_op);
     void FlushCachedWrites();
+
+    /// Where the CPU writes into GPU-written memory that were collected but not applied yet
+    /// (WriteMemory) come from: downloads must not write the GPU's older copy over them.
+    using PendingCpuWrites = std::function<void(const std::function<void(DAddr, size_t)>&)>;
+    void SetPendingCpuWrites(PendingCpuWrites source) {
+        pending_cpu_writes = std::move(source);
+    }
+
+    /// Takes CPU writes about to be applied one by one out of the GPU-written ranges first, so
+    /// applying one doesn't download the GPU's copy over another (WriteMemory keeps the GPU data
+    /// on the pages it writes).
+    void ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges);
 
     /// Return true when there are uncommitted buffers to be downloaded
     [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
@@ -348,7 +396,8 @@ public:
         }
     }
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
-    bool Nx2CopyListPages(u64 tick);
+    /// `writer`: the dispatch's shader hash, 0 for a DMA copy (EDEN_NX2_LIST_WAIT_TRACE).
+    bool Nx2CopyListPages(u64 tick, u64 writer = 0);
     enum class Nx2ListRead { Unknown, Copied, Synced, NeedsSync };
     /// Front thread: Synced when guest memory holds the page `device_addr` lies in (flushed and
     /// written by no GPU work since), else Copied with `out` filled from the copy of its last
@@ -358,7 +407,9 @@ public:
     Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool past_sync);
     /// Front thread, the split drained: the command list page was flushed to guest memory.
     void Nx2NoteListSynced(DAddr page);
-
+    /// The split's back, the front waiting on it: downloads `pages` and every page draws wrote
+    /// since it was last flushed with one GPU wait, and notes the latter synced. Each page's next
+    /// lists then read guest memory instead of draining and flushing one page at a time.
     void Nx2FlushListPages(std::span<const DAddr> pages);
     /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy
     /// no longer holds the page.
@@ -368,7 +419,7 @@ public:
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
     /// Visits the uniform and storage buffers bound for the last draw or dispatch with the cached
-    /// host buffer holding each range, if one does, for diagnostics. Nothing is
+    /// host buffer holding each range, if one does, for EDEN_NX2_FRAME_DUMP_SAMPLED. Nothing is
     /// created or synchronized. Stage 5 is compute.
     template <typename Func>
     void ForEachBoundBuffer(bool compute, Func&& func) {
@@ -656,6 +707,26 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
+    /// Experiment, EDEN_NX2_WRITTEN_SSBO_MARK_KIB=<n>: marks at most n KiB of a written Switch 2
+    /// storage buffer binding GPU-written. Native pointers carry no size, so a written binding
+    /// spans up to 8 MiB of its mapping and arms read traps and fence downloads over CPU data
+    /// the shader never writes. Writes past the cap are not tracked, so this only measures how
+    /// much of the marked range the GPU really writes.
+    u32 WrittenStorageMarkSize(u32 size) const {
+        static const u64 cap = [] {
+            const char* value = std::getenv("EDEN_NX2_WRITTEN_SSBO_MARK_KIB");
+            return value == nullptr ? u64{0} : std::strtoull(value, nullptr, 10) * 1024;
+        }();
+        if (cap == 0 || gpu_memory == nullptr || !gpu_memory->UsesNativeTiling()) {
+            return size;
+        }
+        return static_cast<u32>((std::min<u64>)(size, cap));
+    }
+
+    /// Experiment, EDEN_NX2_SELECTED_WRITE_BOUND=1: the GPU-written mark of a written storage
+    /// binding, bounded for bindings only written by run-time selected global accesses.
+    u32 WrittenMarkSize(bool compute, size_t stage, u32 index, const Binding& binding);
+
     /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
     /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
     /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
@@ -675,12 +746,15 @@ private:
             uncommitted_gpu_modified_ranges.Add(device_addr, size);
             return;
         }
+        // Preflushed writes arm the read traps too: their data reaches guest memory only when
+        // the fence's download lands, and a read before that saw stale words (Ocarina of Time's
+        // whole screen flashed white at the sword boulder, ~180 times in 30 s). The trapped read
+        // flushes on demand only while the data is still in flight (GetFlushArea).
         if (!exact) {
             if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
                 uncommitted_gpu_modified_ranges.Add(device_addr, size);
-            } else {
-                ArmReadTraps(device_addr, size);
             }
+            ArmReadTraps(device_addr, size);
             return;
         }
         const DAddr end = device_addr + size;
@@ -693,9 +767,7 @@ private:
                 queued += upper - lower;
             }
         });
-        if (queued < size) {
-            ArmReadTraps(device_addr, size);
-        }
+        ArmReadTraps(device_addr, size);
         if (Nx2DownloadTrace::g_enabled && queued != 0) [[unlikely]] {
             Nx2DownloadTrace::Queued(device_addr, size, queued);
         }
@@ -727,6 +799,7 @@ private:
     /// fence pops. A write to a range after a download was taken removes it from that download
     /// (and every other pending one): its bytes are older than the write.
     std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
+    PendingCpuWrites pending_cpu_writes;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
@@ -746,6 +819,8 @@ private:
     std::vector<MultiRangeSegment> graphics_segments;
     std::vector<MultiRangeSegment> compute_segments;
     u64 frame_tick = 0;
+    /// EDEN_NX2_SELECTED_WRITE_BOUND: bounds already logged.
+    std::set<std::tuple<bool, size_t, u32, GPUVAddr, u32, u64>> logged_write_bounds;
     /// EDEN_NX2_TABLE_POINTER_TRACE: last table entry and size bound per table pointer slot.
     std::unordered_map<u64, std::pair<GPUVAddr, u32>> traced_table_pointers;
     u64 total_used_memory = 0;
@@ -771,6 +846,7 @@ private:
         u64 synced_writes{~u64{0}};
         u32 copy_begin{};  ///< Bytes of the page the copy holds (a buffer can end inside it)
         u32 copy_end{};
+        u64 copy_writer{}; ///< What recorded the copy (Nx2CopyListPages)
         /// Written outside a compute dispatch or a DMA copy (a draw's storage writes) at least
         /// once: the front can't tell from what it sent which draws write the page, so it reads
         /// no copy. A draw's writes reach a pushbuffer fetch only after a host-level wait, so

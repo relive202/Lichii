@@ -18,6 +18,8 @@ extern const char g_build_version[];
 extern const char g_build_id[];
 extern const char g_build_release_tag[];
 extern const char g_build_release_platform[];
+/// dist/release_name.txt when this build is a named fork release (it is then g_build_version), else empty.
+extern const char g_release_name[];
 extern const char g_title_bar_format_idle[];
 extern const char g_title_bar_format_running[];
 extern const char g_shader_cache_version[];

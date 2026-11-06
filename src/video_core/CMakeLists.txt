@@ -116,6 +116,8 @@ add_library(video_core STATIC
     nx2_cmdpage_diag.h
     nx2_debug_control.cpp
     nx2_debug_control.h
+    nx2_flash_trigger.cpp
+    nx2_flash_trigger.h
     nx2_profile.h
     nx2_perf.h
     nx2_download_trace.h
@@ -170,7 +172,6 @@ add_library(video_core STATIC
     renderer_vulkan/maxwell_to_vk.h
     renderer_vulkan/pipeline_build.h
     renderer_vulkan/pipeline_helper.h
-    renderer_vulkan/pipeline_optimization.h
     renderer_vulkan/pipeline_shader_emission.h
     renderer_vulkan/pipeline_statistics.cpp
     renderer_vulkan/pipeline_statistics.h
@@ -197,18 +198,26 @@ add_library(video_core STATIC
     renderer_vulkan/vk_descriptor_pool.h
     renderer_vulkan/vk_fence_manager.cpp
     renderer_vulkan/vk_fence_manager.h
+    renderer_vulkan/vk_flash_watch.cpp
+    renderer_vulkan/vk_flash_watch.h
     renderer_vulkan/vk_frame_dump.cpp
+    renderer_vulkan/vk_flash_detector.cpp
+    renderer_vulkan/vk_flash_detector.h
     renderer_vulkan/vk_frame_dump.h
     renderer_vulkan/vk_graphics_pipeline.cpp
     renderer_vulkan/vk_graphics_pipeline.h
     renderer_vulkan/vk_multi_range_buffer.cpp
     renderer_vulkan/vk_multi_range_buffer.h
+    renderer_vulkan/vk_gpu_breadcrumbs.cpp
+    renderer_vulkan/vk_gpu_breadcrumbs.h
     renderer_vulkan/vk_master_semaphore.cpp
     renderer_vulkan/vk_master_semaphore.h
     renderer_vulkan/vk_pipeline_cache.cpp
     renderer_vulkan/vk_pipeline_cache.h
     renderer_vulkan/vk_present_manager.cpp
     renderer_vulkan/vk_present_manager.h
+    renderer_vulkan/vk_host_pacer.cpp
+    renderer_vulkan/vk_host_pacer.h
     renderer_vulkan/vk_query_cache.cpp
     renderer_vulkan/vk_query_cache.h
     renderer_vulkan/vk_rasterizer.cpp
@@ -220,6 +229,10 @@ add_library(video_core STATIC
     renderer_vulkan/vk_resource_pool.h
     renderer_vulkan/vk_scheduler.cpp
     renderer_vulkan/vk_scheduler.h
+    renderer_vulkan/vk_resolved_batch.cpp
+    renderer_vulkan/vk_resolved_batch.h
+    renderer_vulkan/vk_parallel_recorder.cpp
+    renderer_vulkan/vk_parallel_recorder.h
     renderer_vulkan/fragment_barrier_state.h
     renderer_vulkan/vk_shader_util.cpp
     renderer_vulkan/vk_shader_util.h

@@ -210,9 +210,9 @@ Id EmitLoadStorage32(EmitContext& ctx, const IR::Value& binding, const IR::Value
     return LoadStorage32(ctx, binding, offset);
 }
 
-// Offsets are relative to a binding aligned only to the device's storage buffer alignment (4 bytes
-// on AMD), so the vector view (offset >> 3 or 4) is exact only for offsets known to be multiples of
-// the access size; otherwise it reads the vector before the access.
+// Offsets are relative to a binding base aligned only to the device's storage buffer alignment
+// (4 bytes on AMD), so the vector view (offset >> 3 or 4) is right only for offsets known to be
+// multiples of the access size; otherwise it reads the previous vector (Ocarina's lighting).
 static bool VectorViewIsExact(EmitContext& ctx, const IR::Value& offset, u32 size) {
     if (!ctx.profile.support_descriptor_aliasing) {
         return false;

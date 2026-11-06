@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -27,7 +28,6 @@
 #include "qt_common/config/qt_config.h"
 #include "qt_common/qt_common.h"
 #include "qt_common/util/game.h"
-#include "yuzu/compatibility_report.h"
 #include "yuzu/hotkeys.h"
 #include "yuzu/user_data_migration.h"
 
@@ -375,6 +375,8 @@ private slots:
     void OnMenuInstallToNAND();
     void OnMenuRecentFile();
     void OnConfigure();
+    /// Asks whether Ocarina of Time runs at 60 or 30 FPS (Settings::values.oot_30fps).
+    void AskOotFrameRate();
     void OnConfigureTas();
     void OnDecreaseVolume();
     void OnIncreaseVolume();
@@ -384,6 +386,7 @@ private slots:
     void OnTasReset();
     void OnToggleGraphicsAPI();
     void OnToggleDockedMode();
+    void OnToggleOotFrameRate();
     void OnToggleGpuAccuracy();
     void OnToggleAdaptingFilter();
     void OnConfigurePerGame();
@@ -456,10 +459,12 @@ private:
                            std::string_view gpu_vendor = {});
     void OnApplicationChanged(u64 program_id);
     void UpdateDockedButton();
+    void UpdateOotFpsButton();
     void UpdateAPIText();
     void UpdateFilterText();
     void UpdateAAText();
     void UpdatePostShaderText();
+    void UpdateFrameGenText();
     void UpdateVolumeUI();
     void UpdateStatusBar();
     void UpdateGPUAccuracyButton();
@@ -530,6 +535,9 @@ private:
     QLabel* res_scale_label = nullptr;
     QLabel* emu_speed_label = nullptr;
     QLabel* game_fps_label = nullptr;
+    QLabel* display_fps_label = nullptr;
+    u64 display_frames_seen{};
+    std::chrono::steady_clock::time_point display_frames_time{};
     QLabel* emu_frametime_label = nullptr;
     QLabel* tas_label = nullptr;
     QLabel* firmware_label = nullptr;
@@ -537,9 +545,11 @@ private:
     QPushButton* renderer_status_button = nullptr;
     QPushButton* refresh_button = nullptr;
     QPushButton* dock_status_button = nullptr;
+    QPushButton* oot_fps_button = nullptr;
     QPushButton* filter_status_button = nullptr;
     QPushButton* aa_status_button = nullptr;
     QPushButton* post_shader_status_button = nullptr;
+    QPushButton* frame_gen_status_button = nullptr;
     VolumeButton* volume_button = nullptr;
     QWidget* volume_popup = nullptr;
     QSlider* volume_slider = nullptr;
@@ -550,10 +560,10 @@ private:
 
     UserDataMigrator user_data_migrator;
     std::unique_ptr<QtConfig> config;
+    bool launched_with_game = false; ///< Started with a game path (skips the first-launch question)
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;
-    std::optional<CompatibilityReporting::Session> report_session;
     bool boot_in_progress = false;
     bool close_pending = false;
     // The path to the game currently running

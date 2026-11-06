@@ -33,6 +33,7 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
+#include "video_core/nx2_flash_trigger.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/textures/decoders.h"
 #include "video_core/vulkan_common/vulkan_debug_callback.h"
@@ -197,13 +198,6 @@ try
     VideoCore::FxChain::Instance().LoadFromSettings();
 #endif
 
-    device_info = {
-        .model = std::string{device.GetModelName()},
-        .driver = device.GetDriverVersion() != 0
-                      ? fmt::format("{} {}", device.GetVendorName(), GetDriverVersion(device))
-                      : std::string{},
-        .api = "Vulkan",
-    };
     Report();
 } catch (const vk::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Vulkan initialization failed with error: {}", exception.what());
@@ -242,6 +236,19 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
                                present_manager.SwapchainImageCount(),
                                swapchain.GetImageViewFormat());
 
+    if (VideoCore::Nx2Debug::FlashEnabled()) {
+        try {
+            if (!flash_detector) {
+                flash_detector = std::make_unique<FlashDetector>(device, memory_allocator, scheduler);
+            }
+            flash_detector->Present(*frame->image, swapchain.GetImageViewFormat(), frame->width, frame->height);
+        } catch (const std::exception& error) {
+            if (const auto config = VideoCore::Nx2Debug::GetFlashConfig()) {
+                VideoCore::Nx2Debug::FailFlash(config->generation, error.what());
+            }
+        }
+    }
+
 #ifdef HAS_LSFG
     void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
 
@@ -253,19 +260,21 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         Frame* generated = present_manager.GetRenderFrame();
         blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
         frame_gen.GenerateInto(device, generated, generation);
-        scheduler.Flush(*generated->render_ready);
+        generated->render_tick = scheduler.Flush(*generated->render_ready);
         present_manager.Present(generated);
+        presented_frames.fetch_add(1, std::memory_order_relaxed);
     }
 #endif
 
     if (trace) {
         scheduler.MarkFrameEnd(++trace_frame);
     }
-    scheduler.Flush(*frame->render_ready);
+    frame->render_tick = scheduler.Flush(*frame->render_ready);
 
     const auto presenting = trace ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
     present_manager.Present(frame);
+    presented_frames.fetch_add(1, std::memory_order_relaxed);
     const auto presented = trace ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
 #ifdef HAS_LSFG
@@ -299,6 +308,10 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
 void RendererVulkan::Report() const {
     using namespace Common::Literals;
+    const std::string vendor_name{device.GetVendorName()};
+    const std::string model_name{device.GetModelName()};
+    const std::string driver_version = GetDriverVersion(device);
+    const std::string driver_name = fmt::format("{} {}", vendor_name, driver_version);
 
     const std::string api_version = GetReadableVersion(device.ApiVersion());
 
@@ -306,8 +319,8 @@ void RendererVulkan::Report() const {
 
     const auto available_vram = static_cast<f64>(device.GetDeviceLocalMemory()) / f64{1_GiB};
 
-    LOG_INFO(Render_Vulkan, "Driver: {} {}", device.GetVendorName(), GetDriverVersion(device));
-    LOG_INFO(Render_Vulkan, "Device: {}", device_info.model);
+    LOG_INFO(Render_Vulkan, "Driver: {}", driver_name);
+    LOG_INFO(Render_Vulkan, "Device: {}", model_name);
     LOG_INFO(Render_Vulkan, "Vulkan: {}", api_version);
     LOG_INFO(Render_Vulkan, "Available VRAM: {:.2f} GiB", available_vram);
     if (VideoCommon::RenderTrace::Enabled()) {

@@ -101,6 +101,17 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(24);
         operand(32);
         break;
+    case 0x9a8: // ATOMG: result in Rd, data operand at bit 32.
+        operand(16);
+        operand(32);
+        break;
+    case 0xb6c:
+    case 0xf6c: // TXD: results in Rd/Rd+1 and the second pair, coordinates in Ra, gradients in Rb..Rb+3.
+        operand(16, 2);
+        operand(24, 2);
+        operand(32, 4);
+        operand(64, 2);
+        break;
     case 0x224:
     case 0x223:
         operand(16);
@@ -173,6 +184,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x210:
     case 0x211:
     case 0x212:
+    case 0x219:
         operand(16);
         operand(24);
         operand(32);

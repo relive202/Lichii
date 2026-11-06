@@ -14,7 +14,6 @@
 #include <fmt/format.h>
 
 #include "video_core/renderer_vulkan/pipeline_helper.h"
-#include "video_core/renderer_vulkan/pipeline_optimization.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
@@ -28,6 +27,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/renderer_vulkan/pipeline_compile_log.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
@@ -205,11 +205,13 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  Common::ThreadWorker* thread_worker,
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
-                                 vk::ShaderModule spv_module_, u64 shader_hash_)
+                                 vk::ShaderModule spv_module_, u64 shader_hash_,
+                                 bool disable_driver_optimization_)
     : device{device_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
-      shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
+      shader_hash{shader_hash_}, disable_driver_optimization{disable_driver_optimization_},
+      spv_module(std::move(spv_module_)) {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -264,7 +266,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         if (uses_descriptor_buffer) {
             flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
-        if (BuildsUnoptimized(device.GetDriverID(), shader_hash)) {
+        if (disable_driver_optimization) {
             flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         }
         const VkComputePipelineCreateInfo compute_ci{
@@ -288,6 +290,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .basePipelineIndex = 0,
         };
         try {
+            const PipelineCompileLog compile_log{
+                disable_driver_optimization ? "compute (unoptimized)" : "compute",
+                fmt::format("s6:{:016x}", shader_hash)};
             pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
@@ -353,7 +358,8 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     for (const auto& desc : info.storage_buffers_descriptors) {
         ASSERT(desc.count == 1);
         buffer_cache.BindComputeStorageBuffer(ssbo_index, desc.cbuf_index, desc.cbuf_offset,
-                                              desc.is_written, desc.indirect_offset);
+                                              desc.is_written, desc.indirect_offset,
+                                              info.native_global_bounds && !desc.rebased_writes);
         ++ssbo_index;
     }
 
@@ -368,6 +374,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const auto read_handle{[&](const auto& desc, u32 index) {
         if (desc.handle_program != ~0U) {
             // Read by the shader from a storage buffer: computed for this dispatch.
+            static const bool align_storage{std::getenv("EDEN_NX2_HANDLE_ALIGN") != nullptr};
             return TexturePair(VideoCommon::EvaluateTextureHandle(
                                    info, desc.handle_program, gpu_memory,
                                    [&](u32 cbuf) -> GPUVAddr {
@@ -376,7 +383,8 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                                        1) != 0
                                                   ? cbufs[cbuf].Address()
                                                   : GPUVAddr{};
-                                   }),
+                                   },
+                                   align_storage ? device.GetStorageBufferAlignment() : 1),
                                via_header_index);
         }
         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
@@ -390,12 +398,12 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 const u32 secondary_offset{desc.secondary_cbuf_offset};
                 const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].Address() +
                                              secondary_offset};
-                const u32 lhs_raw{gpu_memory.Read<u32>(addr) << desc.shift_left};
-                const u32 rhs_raw{gpu_memory.Read<u32>(separate_addr) << desc.secondary_shift_left};
+                const u32 lhs_raw{gpu_memory.ReadHandleWord(addr) << desc.shift_left};
+                const u32 rhs_raw{gpu_memory.ReadHandleWord(separate_addr) << desc.secondary_shift_left};
                 return TexturePair(lhs_raw | rhs_raw, via_header_index);
             }
         }
-        return TexturePair(gpu_memory.Read<u32>(addr), via_header_index);
+        return TexturePair(gpu_memory.ReadHandleWord(addr), via_header_index);
     }};
     const auto add_image{[&](const auto& desc, bool blacklist) {
         for (u32 index = 0; index < desc.count; ++index) {
@@ -440,7 +448,11 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         }
     }
 
-    if (RecordingSampledTextures()) {
+    static const bool record_sampled = [] {
+        const char* const value = std::getenv("EDEN_NX2_FRAME_DUMP_SAMPLED");
+        return value && *value != '\0' && *value != '0';
+    }();
+    if (record_sampled) {
         sampled_images.clear();
         const size_t first = Shader::NumDescriptors(info.texture_buffer_descriptors) +
                              Shader::NumDescriptors(info.image_buffer_descriptors);
@@ -658,8 +670,9 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             cmdbuf.SetDescriptorBufferOffsetsEXT(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_layout,
                                                  0, buffer_index, descriptor_buffer_offset);
         } else if (uses_push_descriptor) {
-            cmdbuf.PushDescriptorSetWithTemplateKHR(*descriptor_update_template, *pipeline_layout,
-                                                    0, descriptor_data);
+            cmdbuf.PushDescriptorSetWithTemplateKHR(
+                *descriptor_update_template, *pipeline_layout, 0, descriptor_data,
+                num_descriptor_entries * sizeof(DescriptorUpdateEntry));
         } else {
             const VkDescriptorSet descriptor_set{descriptor_allocator.Commit()};
             const vk::Device& dev{device.GetLogical()};

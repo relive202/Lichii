@@ -109,6 +109,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdCopyQueryPoolResults);
     X(vkCmdDispatch);
     X(vkCmdDispatchIndirect);
+    X(vkCmdExecuteCommands);
     X(vkCmdDraw);
     X(vkCmdDrawIndexed);
     X(vkCmdDrawIndirect);
@@ -168,6 +169,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdSetColorBlendEquationEXT);
     X(vkCmdResetQueryPool);
     X(vkCmdWriteTimestamp);
+    X(vkCmdWriteBufferMarkerAMD);
     X(vkCmdResolveImage);
     X(vkCreateBuffer);
     X(vkCreateBufferView);
@@ -229,6 +231,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
 #endif
     X(vkGetQueryPoolResults);
     X(vkGetPipelineExecutablePropertiesKHR);
+    X(vkWaitForPresentKHR);
     X(vkGetPipelineExecutableStatisticsKHR);
     X(vkGetSemaphoreCounterValue);
     X(vkMapMemory);

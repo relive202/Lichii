@@ -37,13 +37,13 @@ public:
 
     explicit EmissionBudget(size_t capacity_) : capacity{capacity_} {}
 
-    std::unique_ptr<Reservation> TryAcquire(bool native) {
+    std::unique_ptr<Reservation> TryAcquire(bool enabled, bool native) {
         size_t count = pending->load(std::memory_order_relaxed);
-        if (!DefersShaderEmission(native, count, capacity)) {
+        if (!DefersShaderEmission(enabled, native, count, capacity)) {
             return nullptr;
         }
         auto reservation = std::unique_ptr<Reservation>{new Reservation};
-        while (DefersShaderEmission(native, count, capacity)) {
+        while (DefersShaderEmission(enabled, native, count, capacity)) {
             if (pending->compare_exchange_weak(count, count + 1, std::memory_order_relaxed)) {
                 reservation->pending = pending;
                 return reservation;

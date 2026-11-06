@@ -11,6 +11,7 @@
 #include "core/device_memory.h"
 #include "tests/core/system_test_context.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace {
@@ -62,6 +63,7 @@ public:
 } // namespace
 
 TEST_CASE("MaxContinuousRange from the mapping runs matches the page walk", "[memory_manager]") {
+    REQUIRE(VideoCommon::Nx2Perf::Enabled());
     const u64 big_page_bits = GENERATE(16ULL, 17ULL);
     CAPTURE(big_page_bits);
     ScopedSystemTestContext context;

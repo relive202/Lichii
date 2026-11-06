@@ -179,12 +179,30 @@ elseif (MANAGARM)
 endif()
 
 if (YUZU_USE_BUNDLED_FFMPEG)
-    # Windows (MSVC and MinGW) and Linux x86_64 get the same FFmpeg with libdav1d, for Switch 2
-    # titles' AV1 movies; crueter-ci's packages, used elsewhere, have no AV1 decoder.
+    # Windows (MSVC) and Linux x86_64 get the same FFmpeg with libdav1d, for Switch 2 titles' AV1
+    # movies; crueter-ci's packages, used elsewhere, have no AV1 decoder.
     if ((MSVC OR LINUX) AND CPMUTIL_AMD64)
         AddJsonPackage(ffmpeg-ci-av1)
     elseif (MINGW AND CPMUTIL_AMD64)
-        AddJsonPackage(ffmpeg-ci-av1-mingw)
+        # MinGW gets the same AV1 package. It has only an MSVC build (static .lib archives), so
+        # fetch the windows artifact, point the imports at the .lib files, add the few MSVC
+        # runtime pieces they expect (msvc_runtime.c) and drop their LIBCMT/OLDNAMES default-library
+        # requests, which mingw's UCRT stands in for. Without it the movies (title screen, new game)
+        # decode to nothing: FFmpeg's own av1 decoder needs a hardware decoder.
+        AddCIPackage(
+            VERSION "9.0.2-av1-1"
+            NAME "ffmpeg"
+            REPO "Takoroka/ffmpeg-av1"
+            PACKAGE "FFmpeg"
+            PKGNAME "windows-amd64")
+        foreach (LIB swscale avcodec swresample avfilter avutil)
+            set_target_properties(${LIB} PROPERTIES
+                IMPORTED_LOCATION "${FFmpeg_SOURCE_DIR}/lib/${LIB}.lib")
+        endforeach()
+        add_library(ffmpeg_msvc_runtime STATIC msvc_runtime.c)
+        target_link_libraries(ffmpeg INTERFACE ffmpeg_msvc_runtime bcrypt ole32)
+        target_link_options(ffmpeg INTERFACE
+            "LINKER:-Xlink=-nodefaultlib:libcmt" "LINKER:-Xlink=-nodefaultlib:oldnames")
     else()
         AddJsonPackage(ffmpeg-ci)
     endif()

@@ -14,8 +14,23 @@ endfunction()
 
 get_timestamp(BUILD_DATE)
 
+# This fork's releases are named by dist/release_name.txt (one line, such as
+# "chuppatricky-amd-testbuild v11"). Frizti's builds used dist/frizti_version.txt the same way.
+set(RELEASE_NAME_FILE "${CMAKE_SOURCE_DIR}/dist/release_name.txt")
+if (EXISTS "${RELEASE_NAME_FILE}")
+    file(STRINGS "${RELEASE_NAME_FILE}" RELEASE_NAME LIMIT_COUNT 1 REGEX "^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${RELEASE_NAME_FILE}")
+    # The log names the commit: reconfigure when HEAD moves (commit, checkout, merge, revert).
+    if (EXISTS "${CMAKE_SOURCE_DIR}/.git/logs/HEAD")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/.git/logs/HEAD")
+    endif()
+endif()
+
 if (LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
     set(BUILD_VERSION "${LICHII_BUILD_TAG}")
+    set(IS_DEV_BUILD false)
+elseif (RELEASE_NAME)
+    set(BUILD_VERSION "${RELEASE_NAME}")
     set(IS_DEV_BUILD false)
 elseif (DEFINED GIT_RELEASE)
     set(BUILD_VERSION "${GIT_TAG}")
@@ -33,7 +48,12 @@ else()
     set(IS_NIGHTLY_BUILD false)
 endif()
 
-set(GIT_DESC ${BUILD_VERSION})
+if (RELEASE_NAME AND NOT LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
+    # Logs keep the commit: "Lichii <release name> | <branch>-<commit>".
+    string(SUBSTRING ${GIT_COMMIT} 0 10 GIT_DESC)
+else()
+    set(GIT_DESC ${BUILD_VERSION})
+endif()
 
 # Generate cpp with Git revision from template
 

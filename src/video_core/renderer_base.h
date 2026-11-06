@@ -9,7 +9,6 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-#include <string>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -23,12 +22,6 @@ class GraphicsContext;
 } // namespace Core::Frontend
 
 namespace VideoCore {
-
-struct RendererDeviceInfo {
-    std::string model;
-    std::string driver;
-    std::string api;
-};
 
 struct RendererSettings {
     // Screenshot
@@ -58,10 +51,6 @@ public:
 
     [[nodiscard]] virtual std::string GetDeviceVendor() const = 0;
 
-    [[nodiscard]] const RendererDeviceInfo& GetDeviceInfo() const {
-        return device_info;
-    }
-
     // Getter/setter functions:
     // ------------------------
 
@@ -71,6 +60,11 @@ public:
 
     [[nodiscard]] int GetCurrentFrame() const {
         return m_current_frame;
+    }
+
+    /// Frames handed to the display, generated ones (frame generation) included. Any thread.
+    [[nodiscard]] u64 PresentedFrameCount() const {
+        return presented_frames.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] Core::Frontend::GraphicsContext& Context() {
@@ -114,9 +108,9 @@ protected:
     std::unique_ptr<Core::Frontend::GraphicsContext> context;
     f32 m_current_fps = 0.0f; ///< Current framerate, should be set by the renderer
     int m_current_frame = 0;  ///< Current frame, should be set by the renderer
+    std::atomic<u64> presented_frames{}; ///< Frames presented, set by the renderer
 
     RendererSettings renderer_settings;
-    RendererDeviceInfo device_info;
 
 private:
     /// Updates the framebuffer layout of the contained render window handle.

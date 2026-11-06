@@ -80,6 +80,8 @@ VK_DEFINE_HANDLE(VmaPool)
     FEATURE(KHR, Maintenance6, MAINTENANCE_6, maintenance6)                                        \
     FEATURE(KHR, PipelineExecutableProperties, PIPELINE_EXECUTABLE_PROPERTIES,                     \
             pipeline_executable_properties)                                                        \
+    FEATURE(KHR, PresentId, PRESENT_ID, present_id)                                                \
+    FEATURE(KHR, PresentWait, PRESENT_WAIT, present_wait)                                          \
     FEATURE(KHR, ShaderQuadControl, SHADER_QUAD_CONTROL, shader_quad_control)                      \
     FEATURE(KHR, ShaderMaximalReconvergence, SHADER_MAXIMAL_RECONVERGENCE,                        \
             shader_maximal_reconvergence)                                                        \
@@ -89,6 +91,7 @@ VK_DEFINE_HANDLE(VmaPool)
 
 // Define miscellaneous extensions which may be used by the implementation here.
 #define FOR_EACH_VK_EXTENSION(EXTENSION)                                                           \
+    EXTENSION(AMD, BUFFER_MARKER, buffer_marker)                                                   \
     EXTENSION(EXT, ASTC_DECODE_MODE, astc_decode_mode)                                             \
     EXTENSION(EXT, CONDITIONAL_RENDERING, conditional_rendering)                                   \
     EXTENSION(EXT, CONSERVATIVE_RASTERIZATION, conservative_rasterization)                         \
@@ -676,6 +679,15 @@ FN_MAX_LIMIT_LIST
     }
 
     /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).
+    bool IsPipelineStatisticsQuerySupported() const {
+        return features.features.pipelineStatisticsQuery;
+    }
+
+    /// Whether presents can carry ids and be waited on until shown (the host frame pacer).
+    bool IsKhrPresentWaitSupported() const {
+        return extensions.present_id && extensions.present_wait;
+    }
+
     bool IsExtMeshShaderSupported() const {
         return extensions.mesh_shader && features.mesh_shader.taskShader &&
                features.mesh_shader.meshShader;
@@ -1040,6 +1052,10 @@ FN_MAX_LIMIT_LIST
 
     bool CanReportMemoryUsage() const {
         return extensions.memory_budget;
+    }
+
+    bool IsAmdBufferMarkerSupported() const {
+        return extensions.buffer_marker;
     }
 
     u64 GetDeviceMemoryUsage() const;

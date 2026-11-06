@@ -151,6 +151,7 @@ void RendererOpenGL::Composite(std::span<const Tegra::FramebufferConfig> framebu
     rasterizer.TickFrame();
 
     context->SwapBuffers();
+    presented_frames.fetch_add(1, std::memory_order_relaxed);
     render_window.OnFrameDisplayed();
 }
 
@@ -158,12 +159,6 @@ void RendererOpenGL::AddTelemetryFields() {
     const char* const gl_version{reinterpret_cast<char const*>(glGetString(GL_VERSION))};
     const char* const gpu_vendor{reinterpret_cast<char const*>(glGetString(GL_VENDOR))};
     const char* const gpu_model{reinterpret_cast<char const*>(glGetString(GL_RENDERER))};
-
-    device_info = {
-        .model = gpu_model ? gpu_model : "",
-        .driver = gl_version ? gl_version : "",
-        .api = "OpenGL",
-    };
 
     LOG_INFO(Render_OpenGL, "GL_VERSION: {}", gl_version);
     LOG_INFO(Render_OpenGL, "GL_VENDOR: {}", gpu_vendor);

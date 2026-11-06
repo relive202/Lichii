@@ -81,6 +81,14 @@ public:
         return mask;
     }
 
+    /// Whether a report in the region is still listed (pending host results, or written and not
+    /// unregistered yet). Only the cache mutex: callable from the split front.
+    [[nodiscard]] bool HasCachedReports(VAddr addr, size_t size) {
+        bool result = false;
+        IterateCache<false>(addr, size, [&result](QueryLocation) { result = true; });
+        return result;
+    }
+
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
         bool result = false;
@@ -142,10 +150,12 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {
                     continue;
                 }
+                matched = true;
                 if constexpr (RETURNS_BOOL) {
                     if (func(query.second)) {
                         return;
@@ -154,7 +164,11 @@ protected:
                     func(query.second);
                 }
             }
+            // Only pages with a query in the range: the scan above already found none elsewhere.
             if constexpr (remove_from_cache) {
+                if (!matched) {
+                    continue;
+                }
                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
                     return in_range(pair.first);
                 };
@@ -172,6 +186,11 @@ protected:
     void UnregisterPending();
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
+    /// Fence-flagged Switch 2 reports whose write waits for their fence, by device address, so
+    /// conditional rendering asks the query rather than the stale guest word meanwhile.
+    ::Common::unordered_map<DAddr, QueryLocation> delayed_reports;
+    /// A delayed report rides on the next fence: it must wait for the host GPU (and submit).
+    std::atomic<bool> needs_real_fence{false};
     std::mutex cache_mutex;
 
     struct QueryCacheBaseImpl;
