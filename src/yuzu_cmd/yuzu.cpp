@@ -37,6 +37,7 @@
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/string_util.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
@@ -479,6 +480,7 @@ static bool EditNup(const Core::LaunchParams& lp) {
 }
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
+    Common::ApplyProcessPrioritySwitch();
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WriteCrashDump);
 #endif

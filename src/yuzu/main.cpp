@@ -9,6 +9,7 @@
 
 #include <QApplication>
 
+#include "common/thread.h"
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 #include "startup_checks.h"
@@ -177,6 +178,7 @@ static void LoadNx2Switches(const char* argv0) {
 
 int main(int argc, char* argv[]) {
     LoadNx2Switches(argv[0]);
+    Common::ApplyProcessPrioritySwitch();
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {

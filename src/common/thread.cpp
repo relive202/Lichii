@@ -450,6 +450,17 @@ void RememberCurrentThreadNice(pid_t tid, s32 nice_value) {
 
 namespace Common {
 
+void ApplyProcessPrioritySwitch() {
+#ifdef _WIN32
+    // EDEN_NX2_HIGH_PRIORITY=1: the whole process runs at the high priority class, as Selevet's
+    // performance builds 1-6 did by default. Other programs then yield the CPU to the emulator.
+    const char* value = std::getenv("EDEN_NX2_HIGH_PRIORITY");
+    if (value != nullptr && value[0] == '1') {
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    }
+#endif
+}
+
 void SetCurrentThreadPriority(ThreadPriority new_priority) {
 #ifdef _WIN32
     int windows_priority = [&]() {
