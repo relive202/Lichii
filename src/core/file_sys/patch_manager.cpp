@@ -75,10 +75,30 @@ constexpr std::array MAX_RESOLUTION_RECORDS{
 };
 
 // Dynamic FPS by Dark (Eglantine Dev), bundled with his permission: the game's frame step follows
-// the time measured with the system counter instead of assuming 30 fps, so it runs at full speed
-// at any frame rate. A call (bl 0x3c46200) to a routine in unused space after the code.
+// the time measured with the system counter, so it runs at full speed below 60 fps. A call
+// (bl 0x3c46200) in place of "fdiv s8, s1, s0" (one 1/60 s step) to a routine in unused space
+// after the code.
 constexpr std::array<u8, 4> DYNAMIC_FPS_CALL{0x4F, 0x7D, 0xD5, 0x94};
-constexpr std::array<u8, 120> DYNAMIC_FPS_ROUTINE{
+// This build's routine advances the game a whole number of 1/60 s steps each frame: the time since
+// the last frame (capped at 50 ms) plus the carried remainder, at least one step, the rest carried
+// to the next frame. Dark's routine below steps by the smoothed frame time itself (17-25 ms at 40-58
+// fps), and Ocarina's burning Deku Stick drew a glitchy fire trail with steps that are not whole
+// 1/60 s ones (fine at a locked 30 fps or with the add-on off). Same registers and 16 bytes of state
+// as Dark's routine; the source is in tools/nx2/dynamic_fps_steady.s.
+constexpr std::array<u8, 116> DYNAMIC_FPS_ROUTINE{
+    0x28, 0x18, 0x20, 0x1E, 0xCA, 0x92, 0x00, 0xB0, 0x4A, 0x01, 0x38, 0x91,
+    0x2B, 0xE0, 0x3B, 0xD5, 0x4C, 0x01, 0x40, 0xF9, 0x4B, 0x01, 0x00, 0xF9,
+    0xCC, 0x02, 0x00, 0xB4, 0x6B, 0x01, 0x0C, 0xCB, 0x0D, 0xE0, 0x3B, 0xD5,
+    0x8E, 0x02, 0x80, 0xD2, 0xAE, 0x09, 0xCE, 0x9A, 0x7F, 0x01, 0x0E, 0xEB,
+    0xCB, 0x81, 0x8B, 0x9A, 0x4C, 0x05, 0x40, 0xF9, 0x6B, 0x01, 0x0C, 0x8B,
+    0xA2, 0x01, 0x23, 0x9E, 0x42, 0x18, 0x20, 0x1E, 0x4D, 0x00, 0x39, 0x9E,
+    0x4D, 0x01, 0x00, 0xB4, 0x6E, 0x09, 0xCD, 0x9A, 0xDF, 0x05, 0x00, 0xF1,
+    0xCE, 0x25, 0x9F, 0x9A, 0xCC, 0xAD, 0x0D, 0x9B, 0x9F, 0x01, 0x00, 0xF1,
+    0xEC, 0xB3, 0x8C, 0x9A, 0x4C, 0x05, 0x00, 0xF9, 0xC2, 0x01, 0x23, 0x9E,
+    0x08, 0x09, 0x22, 0x1E, 0xC0, 0x03, 0x5F, 0xD6
+};
+// Dark's routine, used with EDEN_NX2_DYNAMIC_FPS_SMOOTH=1.
+constexpr std::array<u8, 120> DYNAMIC_FPS_ROUTINE_SMOOTH{
     0x28, 0x18, 0x20, 0x1E, 0xCA, 0x92, 0x00, 0xB0, 0x4A, 0x01, 0x38, 0x91,
     0x2B, 0xE0, 0x3B, 0xD5, 0x4C, 0x01, 0x40, 0xF9, 0x4B, 0x01, 0x00, 0xF9,
     0xCC, 0x02, 0x00, 0xB4, 0x6B, 0x01, 0x0C, 0xCB, 0x0D, 0xE0, 0x3B, 0xD5,
@@ -129,6 +149,18 @@ constexpr std::array BUILTIN_PATCHES{
         .records = NATIVE_ZSTD_RECORDS,
     },
 };
+
+/// The bytes a record writes: Dark's original Dynamic FPS routine with EDEN_NX2_DYNAMIC_FPS_SMOOTH=1.
+std::span<const u8> RecordBytes(const BuiltinPatchRecord& record) {
+    static const bool smooth = [] {
+        const char* value = std::getenv("EDEN_NX2_DYNAMIC_FPS_SMOOTH");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (smooth && record.bytes.data() == DYNAMIC_FPS_ROUTINE.data()) {
+        return DYNAMIC_FPS_ROUTINE_SMOOTH;
+    }
+    return record.bytes;
+}
 
 enum class TitleVersionFormat : u8 {
     ThreeElements, ///< vX.Y.Z
@@ -563,9 +595,10 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         // user mod already (the mod's patch is used then, for all records).
         bool apply = true;
         for (const BuiltinPatchRecord& record : patch.records) {
+            const std::span<const u8> bytes = RecordBytes(record);
             const size_t offset = sizeof(Loader::NSOHeader) + record.module_offset;
-            if (nso.size() < offset + record.bytes.size() ||
-                out.size() < offset + record.bytes.size()) {
+            if (nso.size() < offset + bytes.size() ||
+                out.size() < offset + bytes.size()) {
                 LOG_WARNING(Loader, "    - Skipping \"{}\": {}+{:#x} is past the module's end",
                             patch.name, name, record.module_offset);
                 apply = false;
@@ -582,8 +615,8 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                     break;
                 }
             }
-            if (!std::equal(record.bytes.begin(), record.bytes.end(), nso.begin() + offset) &&
-                !std::equal(nso.begin() + offset, nso.begin() + offset + record.bytes.size(),
+            if (!std::equal(bytes.begin(), bytes.end(), nso.begin() + offset) &&
+                !std::equal(nso.begin() + offset, nso.begin() + offset + bytes.size(),
                             out.begin() + offset)) {
                 LOG_INFO(Loader,
                          "    - Skipping \"{}\": a user mod already patched {}+{:#x}, the mod's "
@@ -597,8 +630,9 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             continue;
         }
         for (const BuiltinPatchRecord& record : patch.records) {
+            const std::span<const u8> bytes = RecordBytes(record);
             std::memcpy(out.data() + sizeof(Loader::NSOHeader) + record.module_offset,
-                        record.bytes.data(), record.bytes.size());
+                        bytes.data(), bytes.size());
         }
         LOG_INFO(Loader, "    - Applying built-in patch \"{}\" ({} records) to {}", patch.name,
                  patch.records.size(), name);
