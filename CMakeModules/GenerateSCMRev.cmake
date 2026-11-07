@@ -26,7 +26,8 @@ if (EXISTS "${RELEASE_NAME_FILE}")
     endif()
 endif()
 
-if (LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
+# A named fork keeps its name in published builds too; the build-N tag goes into the description.
+if (LICHII_BUILD_TAG MATCHES "^build-[0-9]+$" AND NOT RELEASE_NAME)
     set(BUILD_VERSION "${LICHII_BUILD_TAG}")
     set(IS_DEV_BUILD false)
 elseif (RELEASE_NAME)
@@ -48,7 +49,10 @@ else()
     set(IS_NIGHTLY_BUILD false)
 endif()
 
-if (RELEASE_NAME AND NOT LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
+if (RELEASE_NAME AND LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
+    # "Lichii <release name> | <branch>-build-N"
+    set(GIT_DESC "${LICHII_BUILD_TAG}")
+elseif (RELEASE_NAME)
     # Logs keep the commit: "Lichii <release name> | <branch>-<commit>".
     string(SUBSTRING ${GIT_COMMIT} 0 10 GIT_DESC)
 else()
@@ -57,11 +61,11 @@ endif()
 
 # Generate cpp with Git revision from template
 
-set(BUILD_AUTO_UPDATE_STABLE_REPO "zortos293/Lichii")
+set(BUILD_AUTO_UPDATE_STABLE_REPO "relive202/Lichii")
 set(BUILD_AUTO_UPDATE_STABLE_API "api.github.com")
-set(BUILD_AUTO_UPDATE_API_PATH "/repos/zortos293/Lichii/releases?per_page=100")
+set(BUILD_AUTO_UPDATE_API_PATH "/repos/relive202/Lichii/releases?per_page=100")
 set(BUILD_AUTO_UPDATE_WEBSITE "https://github.com")
-set(BUILD_AUTO_UPDATE_REPO "zortos293/Lichii")
+set(BUILD_AUTO_UPDATE_REPO "relive202/Lichii")
 if (NIGHTLY_BUILD)
     set(REPO_NAME "Lichii Nightly")
 else()
