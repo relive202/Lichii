@@ -473,6 +473,10 @@ endif()
 target_include_directories(video_core PUBLIC ${FFmpeg_INCLUDE_DIR})
 
 target_link_libraries(video_core PRIVATE ${FFmpeg_LIBRARIES})
+# vk_host_pacer.cpp reads the compositor's refresh period (DwmGetCompositionTimingInfo).
+if (WIN32)
+    target_link_libraries(video_core PRIVATE dwmapi)
+endif()
 target_link_options(video_core PRIVATE ${FFmpeg_LDFLAGS})
 
 add_dependencies(video_core host_shaders)

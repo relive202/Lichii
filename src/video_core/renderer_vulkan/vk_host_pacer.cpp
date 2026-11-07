@@ -12,7 +12,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <dwmapi.h>
+// MSVC links dwmapi from here; MinGW gets it from video_core's CMakeLists.
+#ifdef _MSC_VER
 #pragma comment(lib, "dwmapi.lib")
+#endif
 #endif
 
 namespace Vulkan {
