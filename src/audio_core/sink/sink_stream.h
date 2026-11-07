@@ -268,6 +268,10 @@ private:
     /// EDEN_NX2_AUDIO_LEVEL meter state.
     s32 level_peak{};
     u64 level_frames{};
+    /// Output frames the game's audio didn't fill in time (EDEN_NX2_AUDIO_UNDERRUN).
+    u64 underrun_frames{};
+    u64 underrun_window{};
+    u64 underrun_total{};
     /// Number of buffers waiting to be played
     std::atomic<u32> queued_buffers{};
     /// The ring size for audio out buffers (usually 4, rarely 2 or 8)

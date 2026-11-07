@@ -213,6 +213,7 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
 
             if (!queue.TryPop(playing_buffer)) {
                 lk.unlock();
+                underrun_frames += num_frames - frames_written;
                 for (size_t i = frames_written; i < num_frames; i++) {
                     if (type == StreamType::Sysmix) {
                         std::memset(&output_buffer[i * frame_size], 0, frame_size_bytes);
@@ -242,6 +243,26 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
     }
 
     std::memcpy(last_frame.data(), &output_buffer[(frames_written - 1) * frame_size], frame_size_bytes);
+
+    // EDEN_NX2_AUDIO_UNDERRUN=1: about every two seconds, how much of the output the game's audio
+    // didn't fill in time. Those frames repeat the last sample and aren't counted as played, so
+    // the audio after them plays that much later than the picture.
+    if (static const bool underrun_log = [] {
+            const char* value = std::getenv("EDEN_NX2_AUDIO_UNDERRUN");
+            return value != nullptr && value[0] == '1';
+        }();
+        underrun_log && type != StreamType::Sysmix) {
+        underrun_window += num_frames;
+        if (underrun_window >= TargetSampleRate * 2) {
+            underrun_total += underrun_frames;
+            LOG_INFO(Audio, "Audio underruns: {:.1f} ms of the last {:.1f} s ({:.1f} ms in all)",
+                     underrun_frames * 1000.0 / TargetSampleRate,
+                     static_cast<double>(underrun_window) / TargetSampleRate,
+                     underrun_total * 1000.0 / TargetSampleRate);
+            underrun_window = 0;
+            underrun_frames = 0;
+        }
+    }
 
     // EDEN_NX2_AUDIO_LEVEL: log the output peak about every two seconds (is a game audible?).
     if (static const bool meter = std::getenv("EDEN_NX2_AUDIO_LEVEL") != nullptr;
