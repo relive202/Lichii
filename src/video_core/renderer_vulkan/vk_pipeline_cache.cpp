@@ -41,6 +41,8 @@
 #include "video_core/nx2_perf.h"
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_vulkan/async_draw_policy.h"
+#include "video_core/renderer_vulkan/pipeline_compile_trace.h"
+#include "video_core/renderer_vulkan/pipeline_library_cache.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -337,6 +339,11 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
     return info;
 }
 
+const char* StageTag(size_t index) {
+    static constexpr const char* tags[]{"vsa", "vs", "tcs", "tes", "gs", "fs"};
+    return index < 6 ? tags[index] : "xx";
+}
+
 std::array<std::atomic<std::chrono::nanoseconds::rep>, 2> runtime_spirv_ns{};
 
 void AddRuntimeSpirvTime(size_t thread, std::chrono::steady_clock::time_point begin) {
@@ -349,10 +356,16 @@ void AddRuntimeSpirvTime(size_t thread, std::chrono::steady_clock::time_point be
 vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& profile,
                                  const Shader::RuntimeInfo& runtime_info,
                                  Shader::IR::Program& program, Shader::Backend::Bindings& binding,
-                                 u64 shader_hash, size_t stage_index,
+                                 u64 shader_hash, size_t stage_index, u64* spirv_hash,
                                  std::span<const u32> reference = {}) {
     const auto code =
         EmitPipelineShader(profile, runtime_info, program, binding, shader_hash, reference);
+    CompileTrace::DumpSpirv(shader_hash, StageTag(stage_index + 1), code);
+    if (spirv_hash != nullptr) {
+        // Shared pipeline parts are keyed by the SPIR-V itself (sharkiix 3.1).
+        *spirv_hash = Common::CityHash64(reinterpret_cast<const char*>(code.data()),
+                                         code.size() * sizeof(u32));
+    }
     device.SaveShader(code);
     vk::ShaderModule module{BuildShader(device, code)};
 
@@ -518,6 +531,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                            Common::ThreadPlacement::Background) {
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
+    PipelineOptimizer::Instance().Start();
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
     const auto subgroup_stage_bit{[subgroup_stages](VkShaderStageFlags flag, Shader::Stage stage) {
         return (subgroup_stages & flag) != 0 ? (1u << static_cast<u32>(stage)) : 0u;
@@ -805,6 +819,7 @@ bool PreloadAllPipelines() {
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
+    PipelineOptimizer::Instance().Stop();
     StopBackgroundPipelines();
     workers.WaitForRequests();
     serialization_thread.WaitForRequests();
@@ -816,6 +831,7 @@ PipelineCache::~PipelineCache() {
     background_ready.clear();
     graphics_cache.clear();
     evicted_pipelines.clear();
+    PipelineLibraryCache::Instance().Clear();
 }
 
 void PipelineCache::SaveUsedPipelines() {
@@ -1794,6 +1810,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
     std::array<std::optional<Shader::RuntimeInfo>, Maxwell::MaxShaderStage> deferred_runtime_infos;
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> reference_spirv;
+    std::array<u64, Maxwell::MaxShaderStage> spirv_hashes{};
 
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
@@ -1820,14 +1837,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         } else {
             const auto begin = std::chrono::steady_clock::now();
             modules[stage_index] = EmitShaderModule(device, profile, runtime_info, program, binding,
-                                                   key.unique_hashes[index], stage_index);
+                                                   key.unique_hashes[index], stage_index,
+                                                   &spirv_hashes[stage_index]);
             if (build_in_parallel) {
                 AddRuntimeSpirvTime(0, begin);
             }
         }
         previous_stage = &program;
     }
-    std::function<std::array<vk::ShaderModule, Maxwell::MaxShaderStage>()> emit_stages;
+    std::function<std::array<vk::ShaderModule, Maxwell::MaxShaderStage>(
+        std::array<u64, Maxwell::MaxShaderStage>&)>
+        emit_stages;
     if (emit_pools) {
         auto job = std::make_shared<DeferredStages>();
         job->reservation = std::move(reservation);
@@ -1840,7 +1860,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 infos[stage] = &job->programs[stage + 1].info;
             }
         }
-        emit_stages = [this, job = std::move(job), hashes = key.unique_hashes]() mutable {
+        emit_stages = [this, job = std::move(job), hashes = key.unique_hashes](
+                          std::array<u64, Maxwell::MaxShaderStage>& stage_hashes) mutable {
             const auto begin = std::chrono::steady_clock::now();
             std::array<vk::ShaderModule, Maxwell::MaxShaderStage> stage_modules;
             Shader::Backend::Bindings stage_binding;
@@ -1849,7 +1870,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                     stage_modules[stage] =
                         EmitShaderModule(device, profile, *job->runtime_infos[stage],
                                          job->programs[stage + 1], stage_binding,
-                                         hashes[stage + 1], stage, job->reference_spirv[stage]);
+                                         hashes[stage + 1], stage, &stage_hashes[stage],
+                                         job->reference_spirv[stage]);
                 }
             }
             auto pools = std::move(job->pools);
@@ -1869,7 +1891,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
-        render_pass_cache, key, std::move(modules), infos, std::move(emit_stages));
+        render_pass_cache, key, std::move(modules), infos, std::move(emit_stages),
+        spirv_hashes);
 
 } catch (const Shader::Exception& exception) {
     auto hash = key.Hash();
@@ -2072,6 +2095,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         program.shared_memory_size = max_shared_memory;
     }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
+    CompileTrace::DumpSpirv(key.unique_hash, "cs", code);
     device.SaveShader(code);
     vk::ShaderModule spv_module{BuildShader(device, code)};
 

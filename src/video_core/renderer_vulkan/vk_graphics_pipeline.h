@@ -88,7 +88,8 @@ public:
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
         const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
-        std::function<std::array<vk::ShaderModule, NUM_STAGES>()> emit_stages = {});
+        std::function<std::array<vk::ShaderModule, NUM_STAGES>(std::array<u64, NUM_STAGES>&)> emit_stages = {},
+        const std::array<u64, NUM_STAGES>& spirv_hashes = {});
 
     static std::chrono::nanoseconds TakeHoldTime() noexcept;
 
@@ -134,6 +135,8 @@ public:
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
+    ~GraphicsPipeline();
+
     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
 
@@ -213,6 +216,9 @@ private:
     u64 last_use_frame{};
 
     std::array<vk::ShaderModule, NUM_STAGES> spv_modules;
+    /// Hash of each stage's SPIR-V and of the descriptor layout, to share pipeline parts.
+    std::array<u64, NUM_STAGES> spirv_hashes{};
+    u64 layout_key{};
 
     std::array<Shader::Info, NUM_STAGES> stage_infos;
     std::array<u32, 5> enabled_uniform_buffer_masks{};
@@ -231,6 +237,8 @@ private:
     vk::PipelineLayout pipeline_layout;
     vk::DescriptorUpdateTemplate descriptor_update_template;
     vk::Pipeline pipeline;
+    /// Optimized relink of a fast-linked pipeline, swapped in once built.
+    std::shared_ptr<struct PipelineOptimizeTask> optimize_task;
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
@@ -239,6 +247,9 @@ private:
     u64 last_descriptor_buffer_generation{};
 
     const bool worker_only_build;
+    /// Built because a draw asked for it during play (not preloaded at boot or in the
+    /// background): the only pipelines fast-linked from shared parts unless EDEN_NX2_GPL_ALL=1.
+    const bool runtime_build;
     bool uses_push_descriptor{false};
     bool uses_descriptor_buffer{false};
     std::optional<PipelineBuild> build;
