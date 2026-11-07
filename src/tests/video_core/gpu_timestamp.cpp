@@ -106,3 +106,18 @@ TEST_CASE("Maxwell retains its tick units and clock scaling", "[video_core][gpu_
         }
     }
 }
+
+TEST_CASE("GpuTimestamp: Ocarina of Time uses Boost for Overclock", "[video_core]") {
+    constexpr u64 Ocarina = 0x0400486024DEC000ULL;
+    constexpr u64 Other = 0x0400380020056000ULL;
+    REQUIRE(Tegra::EffectiveGpuClock(Settings::GpuClock::Overclock, Ocarina) ==
+            Settings::GpuClock::Boost);
+    REQUIRE(Tegra::EffectiveGpuClock(Settings::GpuClock::Boost, Ocarina) ==
+            Settings::GpuClock::Boost);
+    REQUIRE(Tegra::EffectiveGpuClock(Settings::GpuClock::Normal, Ocarina) ==
+            Settings::GpuClock::Normal);
+    REQUIRE(Tegra::EffectiveGpuClock(Settings::GpuClock::Overclock, Other) ==
+            Settings::GpuClock::Overclock);
+    REQUIRE(Tegra::EffectiveGpuClock(Settings::GpuClock::Overclock, 0) ==
+            Settings::GpuClock::Overclock);
+}

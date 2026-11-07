@@ -82,6 +82,13 @@ struct GPU::Impl {
     }
 
     void InitChannel(Control::ChannelState& to_init, u64 program_id) {
+        if (program_id != 0 && program_id_for_clock.exchange(program_id) != program_id &&
+            EffectiveGpuClock(Settings::GpuClock::Overclock, program_id) !=
+                Settings::GpuClock::Overclock &&
+            Settings::values.gpu_clock.GetValue() == Settings::GpuClock::Overclock) {
+            LOG_WARNING(HW_GPU, "GPU Clocks is Overclock: this game uses Boost instead, as "
+                                "Overclock breaks its picture");
+        }
         to_init.Init(system, program_id);
         to_init.BindRasterizer(renderer->ReadRasterizer());
         renderer->ReadRasterizer()->InitializeChannel(to_init);
@@ -171,7 +178,9 @@ struct GPU::Impl {
 
     [[nodiscard]] u64 GetTicks() const {
         return ReadGpuTimestamp(system.CoreTiming(), g_nx2_ampere.load(std::memory_order_relaxed),
-                                Settings::values.gpu_clock.GetValue(),
+                                EffectiveGpuClock(Settings::values.gpu_clock.GetValue(),
+                                                  program_id_for_clock.load(
+                                                      std::memory_order_relaxed)),
                                 present_ns.load(std::memory_order_relaxed));
     }
 
@@ -376,6 +385,7 @@ struct GPU::Impl {
     std::list<std::function<void()>> sync_requests;
     std::atomic<u64> current_sync_fence{};
     std::atomic<u64> present_ns{};
+    std::atomic<u64> program_id_for_clock{};
     u64 last_sync_fence{};
 
     VideoCommon::PendingMaps pending_maps;

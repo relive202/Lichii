@@ -20,6 +20,19 @@ namespace Tegra {
     }
 }
 
+/// The GPU Clocks setting as a title's timestamps use it. Ocarina of Time (Switch 2) sizes its
+/// dynamic resolution from GPU time; Boost already takes it to its 1920x1080 maximum, and players
+/// on Overclock saw textures flicker and turn white (with Force maximum clocks on, too), so there
+/// Overclock counts as Boost.
+[[nodiscard]] constexpr Settings::GpuClock EffectiveGpuClock(Settings::GpuClock clock,
+                                                             u64 program_id) {
+    constexpr u64 OcarinaOfTime = 0x0400486024DEC000ULL;
+    if (program_id == OcarinaOfTime && clock == Settings::GpuClock::Overclock) {
+        return Settings::GpuClock::Boost;
+    }
+    return clock;
+}
+
 /// Switch 2 titles read report timestamps as nanoseconds and calibrate them against CPU time, so
 /// Boost and Overclock shrink only the time since the last present (present_ns): GPU durations
 /// within a frame look shorter, while a timestamp never runs ahead of the CPU clock and trails it
