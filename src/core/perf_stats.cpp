@@ -85,6 +85,23 @@ void PerfStats::EndSystemFrame() {
 
 void PerfStats::EndGameFrame() {
     game_frames.fetch_add(1, std::memory_order_relaxed);
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now().time_since_epoch())
+                        .count();
+    const s64 last = last_game_frame_ns.exchange(now, std::memory_order_relaxed);
+    if (last != 0) {
+        const s64 gap = now - last;
+        s64 longest = longest_game_frame_ns.load(std::memory_order_relaxed);
+        while (gap > longest &&
+               !longest_game_frame_ns.compare_exchange_weak(longest, gap,
+                                                            std::memory_order_relaxed)) {
+        }
+    }
+}
+
+double PerfStats::TakeLongestGameFrameMs() {
+    return static_cast<double>(longest_game_frame_ns.exchange(0, std::memory_order_relaxed)) /
+           1'000'000.0;
 }
 
 double PerfStats::GetMeanFrametime() const {

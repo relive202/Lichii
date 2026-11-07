@@ -8,6 +8,7 @@
 #undef VMA_IMPLEMENTATION
 #endif
 
+#include <cstdlib>
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
 #include "common/game_presets.h"
@@ -4811,11 +4812,24 @@ void MainWindow::UpdateStatusBar() {
     } else if (const double seconds =
                    std::chrono::duration<double>(now - display_frames_time).count();
                seconds >= 1.0) {
-        display_fps_label->setText(
-            tr("Display: %1 FPS")
-                .arg(std::round(static_cast<double>(display_frames - display_frames_seen) /
-                                seconds),
-                     0, 'f', 0));
+        const double display_fps =
+            static_cast<double>(display_frames - display_frames_seen) / seconds;
+        display_fps_label->setText(tr("Display: %1 FPS").arg(std::round(display_fps), 0, 'f', 0));
+        // One line a second for comparing builds afterwards: the averages plus the longest gap
+        // between two game frames, which shows stutters an average hides.
+        // EDEN_NX2_FPS_LOG=0 stops it.
+        static const bool fps_log = [] {
+            const char* value = std::getenv("EDEN_NX2_FPS_LOG");
+            return value == nullptr || value[0] != '0';
+        }();
+        const double longest_ms = QtCommon::system->GetPerfStats().TakeLongestGameFrameMs();
+        if (fps_log) {
+            LOG_INFO(Frontend,
+                     "FPS log: game {:.1f} fps, display {:.1f} fps, longest frame {:.1f} ms, "
+                     "speed {:.0f}%, frametime {:.2f} ms",
+                     results.average_game_fps, display_fps, longest_ms,
+                     results.emulation_speed * 100.0, results.frametime * 1000.0);
+        }
         display_frames_seen = display_frames;
         display_frames_time = now;
     }

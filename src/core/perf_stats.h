@@ -51,7 +51,16 @@ public:
      */
     double GetLastFrameTimeScale() const;
 
+    /// Longest gap between two game frames since the previous call, in milliseconds (0 if fewer
+    /// than two frames). Lets the frontend log stutters that a per-second average hides.
+    double TakeLongestGameFrameMs();
+
 private:
+    /// Steady-clock nanoseconds of the previous game frame, and the longest gap since the last
+    /// TakeLongestGameFrameMs.
+    std::atomic<s64> last_game_frame_ns{0};
+    std::atomic<s64> longest_game_frame_ns{0};
+
     mutable std::mutex object_mutex;
 
     /// Title ID for the game that is running. 0 if there is no game running yet
